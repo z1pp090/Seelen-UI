@@ -63,6 +63,10 @@ pub fn get_tokio_handle() -> &'static tokio::runtime::Handle {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    if let Some(exit_code) = modules::notifications::history_helper::run_if_requested() {
+        return exit_code;
+    }
+
     if let Err(err) = SeelenLogger::init() {
         let fallback = std::env::temp_dir().join("seelen-ui-logger-error.log");
         let _ = std::fs::write(&fallback, format!("Failed to initialize logger: {err:?}"));

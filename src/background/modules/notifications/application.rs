@@ -34,10 +34,10 @@ use crate::{
     event_manager,
     modules::{
         apps::application::msix::get_hightest_quality_posible_for_uwp_image,
-        start::application::StartMenuManager,
+        notifications::history_helper, start::application::StartMenuManager,
     },
     utils::{
-        convert_file_to_src, icon_extractor::request_icon_extraction_from_umid,
+        convert_file_to_src, icon_extractor::request_icon_extraction_from_umid, is_running_as_appx,
         lock_free::SyncHashMap, spawn_named_thread,
     },
     windows_api::{
@@ -272,19 +272,29 @@ impl NotificationManager {
             notification_text.push_str(&text);
         }
 
+        let mut toast_xmls = Vec::new();
         for toast_notification in toast_notifications {
             // this can be null when the notification count is bigger than the max allowed by default 20
             if let Ok(content) = toast_notification.Content() {
-                let toast_xml = content.GetXml()?.to_string();
-                let mut toast: Toast = quick_xml::de::from_str(&toast_xml)?;
-                let toast_text = get_text_from_toast_for_comparison(&toast);
+                toast_xmls.push(content.GetXml()?.to_string());
+            }
+        }
 
-                // log::debug!("comparing: \n - {notification_text:?} \n - {toast_text:?} \n {toast:?}");
+        if let Some(toast) = Self::find_toast_by_text(&toast_xmls, &notification_text, umid)? {
+            return Ok(toast);
+        }
 
-                if notification_text == toast_text {
-                    Self::clean_toast(&mut toast, umid)?;
-                    return Ok(toast);
+        // packaged, the history of win32 apps comes empty, see `history_helper`
+        if is_running_as_appx() && !AppUserModelId::from(umid.to_owned()).is_appx() {
+            match history_helper::get_toast_history_outside_package(umid) {
+                Ok(toast_xmls) => {
+                    if let Some(toast) =
+                        Self::find_toast_by_text(&toast_xmls, &notification_text, umid)?
+                    {
+                        return Ok(toast);
+                    }
                 }
+                Err(err) => log::warn!("Can't read the toast history outside the package: {err}"),
             }
         }
 
@@ -305,6 +315,25 @@ impl NotificationManager {
         }
         Self::clean_toast(&mut toast, umid)?;
         Ok(toast)
+    }
+
+    fn find_toast_by_text(
+        toast_xmls: &[String],
+        notification_text: &str,
+        umid: &str,
+    ) -> Result<Option<Toast>> {
+        for toast_xml in toast_xmls {
+            let mut toast: Toast = quick_xml::de::from_str(toast_xml)?;
+            let toast_text = get_text_from_toast_for_comparison(&toast);
+
+            // log::debug!("comparing: \n - {notification_text:?} \n - {toast_text:?} \n {toast:?}");
+
+            if notification_text == toast_text {
+                Self::clean_toast(&mut toast, umid)?;
+                return Ok(Some(toast));
+            }
+        }
+        Ok(None)
     }
 
     fn clean_toast(toast: &mut Toast, umid: &str) -> Result<()> {
